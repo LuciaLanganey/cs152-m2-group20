@@ -216,14 +216,14 @@ class Report:
         
     def handleBullyingAndUnwantedFlow(self, message):
         if message.content.lower() == "yes":
-            reply = "Thank you for your report. We will be reporting this as Coersion involving intimate content and the user is under 18.\n\n"
-            reply += "Please provide more details about the case.\n\n"
+            reply = "We will be reporting this as Coersion involving intimate content and the user is under 18.\n\n"
+            reply += "Did the user threaten to distribute sensitive information on or off of the platform? Please respond with 'yes' or 'no'.\n\n"
             self.state = State.AWAITING_DETAILS
             return [reply]
             
         elif message.content.lower() == "no":
-            reply = "Thank you for your report. We will be reporting this as Coersion involving intimate content and the user is 18 or older.\n\n"
-            reply += "Please provide more details about the case.\n\n"
+            reply = "We will be reporting this as Coersion involving intimate content and the user is 18 or older.\n\n"
+            reply += "Did the user threaten to distribute sensitive information on or off of the platform? Please respond with 'yes' or 'no'.\n\n"
             self.state = State.AWAITING_DETAILS
             return [reply]
         return []
