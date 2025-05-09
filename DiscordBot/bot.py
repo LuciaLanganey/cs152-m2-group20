@@ -30,7 +30,8 @@ class ModBot(discord.Client):
     def __init__(self): 
         intents = discord.Intents.default()
         intents.message_content = True
-        super().__init__(command_prefix='.', intents=intents)
+        intents.reactions = True # Enable reaction intents
+        super().__init__(intents=intents)
         self.group_num = None
         self.mod_channels = {} # Map from guild to the mod channel id for that guild
         self.reports = {} # Map from user IDs to the state of their report
@@ -53,7 +54,6 @@ class ModBot(discord.Client):
             for channel in guild.text_channels:
                 if channel.name == f'group-{self.group_num}-mod':
                     self.mod_channels[guild.id] = channel
-        
 
     async def on_message(self, message):
         '''
@@ -69,6 +69,28 @@ class ModBot(discord.Client):
             await self.handle_channel_message(message)
         else:
             await self.handle_dm(message)
+
+    async def on_reaction_add(self, reaction, user):
+        """
+        Handle reactions on messages in the mod channel
+        """
+        if user.id == self.user.id:
+            return
+            
+        guild_id = reaction.message.guild.id
+        mod_channel = self.mod_channels.get(guild_id)
+        
+        if not mod_channel or reaction.message.channel.id != mod_channel.id:
+            return
+            
+        if str(reaction.emoji) == "🟢":
+            await reaction.message.channel.send(f"Moderator {user.name} has confirmed this is a violation.")
+            
+        elif str(reaction.emoji) == "🔴":
+            await reaction.message.channel.send(f"Moderator {user.name} has determined this is not a violation.")
+            
+        elif str(reaction.emoji) == "🟡":
+            await reaction.message.channel.send(f"Moderator {user.name} is not sure if this report is a violation. Requesting second review.")
 
     async def handle_dm(self, message):
         # Handle a help message
@@ -89,7 +111,7 @@ class ModBot(discord.Client):
         if author_id not in self.reports:
             self.reports[author_id] = Report(self)
 
-        # Let the report class handle this message; forward all the messages it returns to uss
+        # Let the report class handle this message; forward all the messages it returns to us
         responses = await self.reports[author_id].handle_message(message)
         for r in responses:
             await message.channel.send(r)
@@ -104,12 +126,12 @@ class ModBot(discord.Client):
             return
 
         # Forward the message to the mod channel
-        mod_channel = self.mod_channels[message.guild.id]
-        await mod_channel.send(f'Forwarded message:\n{message.author.name}: "{message.content}"')
-        scores = self.eval_text(message.content)
-        await mod_channel.send(self.code_format(scores))
+        mod_channel = self.mod_channels.get(message.guild.id)
+        if mod_channel:
+            await mod_channel.send(f'Forwarded message:\n{message.author.name}: "{message.content}"')
+            scores = self.eval_text(message.content)
+            await mod_channel.send(self.code_format(scores))
 
-    
     def eval_text(self, message):
         ''''
         TODO: Once you know how you want to evaluate messages in your channel, 
@@ -117,7 +139,6 @@ class ModBot(discord.Client):
         '''
         return message
 
-    
     def code_format(self, text):
         ''''
         TODO: Once you know how you want to show that a message has been 
