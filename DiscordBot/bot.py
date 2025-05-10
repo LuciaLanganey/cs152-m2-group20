@@ -60,6 +60,8 @@ class ModBot(discord.Client):
         This function is called whenever a message is sent in a channel that the bot can see (including DMs). 
         Currently the bot is configured to only handle messages that are sent over DMs or in your group's "group-#" channel. 
         '''
+        print(f"Message from {message.author.name}: {message.content} (Guild: {message.guild})")
+
         # Ignore messages from the bot 
         if message.author.id == self.user.id:
             return
@@ -76,22 +78,85 @@ class ModBot(discord.Client):
         """
         if user.id == self.user.id:
             return
-            
+
         guild_id = reaction.message.guild.id
         mod_channel = self.mod_channels.get(guild_id)
-        
+
         if not mod_channel or reaction.message.channel.id != mod_channel.id:
             return
-            
-        if str(reaction.emoji) == "🟢":
-            await reaction.message.channel.send(f"Moderator {user.name} has confirmed this is a violation.")
-            
-        elif str(reaction.emoji) == "🔴":
-            await reaction.message.channel.send(f"Moderator {user.name} has determined this is not a violation.")
-            
-        elif str(reaction.emoji) == "🟡":
-            await reaction.message.channel.send(f"Moderator {user.name} is not sure if this report is a violation. Requesting second review.")
 
+        emoji = str(reaction.emoji)
+
+        if emoji == "🟢":
+            await reaction.message.channel.send(f"Moderator {user.name} has confirmed this is a violation.")
+            # Add escalation decision reactions to the same message
+            await reaction.message.channel.send(
+                "Does this content require escalation due to severity or legal concerns?\n"
+                "React ✅ (Yes) or ❌ (No)."
+            )
+            await reaction.message.add_reaction("✅")
+            await reaction.message.add_reaction("❌")
+
+        elif emoji == "🔴":
+            await reaction.message.channel.send(f"Moderator {user.name} has determined this is not a violation.")
+            await reaction.message.channel.send("The user who submitted the message will be warned.")
+
+        elif emoji == "🟡":
+            await reaction.message.channel.send(
+                f"Moderator {user.name} is not sure if this report is a violation. Requesting second review.\n"
+                "Does this content violate the Community Standards on 'Coercion involving intimate content'?\n"
+                "React 🟢 (Yes) or 🔴 (No)."
+            )
+
+        elif emoji == "✅":
+            await reaction.message.channel.send(
+                "Escalating to Trust & Safety or Legal Team for further investigation and potential law enforcement referral."
+            )
+
+        elif emoji == "❌":
+            action_prompt = (
+                "**Which type of action will you take?**\n"
+                "React with one of the following:\n\n"
+                "🗑️ — Delete content → Content deleted and user informed\n"
+                "⚠️ — Content Labeling / Warning Banners → User informed about warning\n"
+                "🫥 — Soft Interventions:\n"
+                "  🫣 — Content blur\n"
+                "  📵 — Temporary Messaging Block\n"
+                "  📚 — Send Educational Warning\n"
+                "⛔ — Disable account → Content deleted and user notified of account suspension"
+            )
+            await reaction.message.channel.send(action_prompt)
+            await reaction.message.add_reaction("🗑️")
+            await reaction.message.add_reaction("⚠️")
+            await reaction.message.add_reaction("🫥")
+            await reaction.message.add_reaction("⛔")
+            await reaction.message.add_reaction("🫣")
+            await reaction.message.add_reaction("📵")
+            await reaction.message.add_reaction("📚")
+
+        elif emoji == "🗑️":
+            await reaction.message.channel.send("Content deleted and user informed.")
+
+        elif emoji == "⚠️":
+            await reaction.message.channel.send("Content labeled with a warning banner. User informed about warning.")
+
+        elif emoji == "🫥":
+            await reaction.message.channel.send(
+                "Soft intervention selected. Please choose:\n"
+                "🫣 — Content blur\n"
+                "📵 — Temporary Messaging Block\n"
+                "📚 — Send Educational Warning"
+            )
+            await reaction.message.add_reaction("🫣")
+            await reaction.message.add_reaction("📵")
+            await reaction.message.add_reaction("📚")
+
+        elif emoji in ["🫣", "📵", "📚"]:
+            await reaction.message.channel.send("Soft intervention applied. User informed about the action.")
+
+        elif emoji == "⛔":
+            await reaction.message.channel.send("Account disabled. Content deleted and user notified of account suspension.")
+            
     async def handle_dm(self, message):
         # Handle a help message
         if message.content == Report.HELP_KEYWORD:
