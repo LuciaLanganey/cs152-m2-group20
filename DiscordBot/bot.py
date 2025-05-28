@@ -37,19 +37,28 @@ class ModBot(discord.Client):
         self.reports = {} # Map from user IDs to the state of their report
 
     async def on_ready(self):
+        """Called when bot connects to Discord"""
         print(f'{self.user.name} has connected to Discord! It is these guilds:')
         for guild in self.guilds:
             print(f' - {guild.name}')
         print('Press Ctrl-C to quit.')
 
         # Parse the group number out of the bot's name
-        match = re.search('[gG]roup (\d+) [bB]ot', self.user.name)
+        self._parse_group_number()
+        
+        # Find mod channels for each guild
+        self._find_mod_channels()
+
+    def _parse_group_number(self):
+        """Extract group number from bot's name"""
+        match = re.search(r'[gG]roup (\d+) [bB]ot', self.user.name)
         if match:
             self.group_num = match.group(1)
         else:
-            raise Exception("Group number not found in bot's name. Name format should be \"Group # Bot\".")
+            raise Exception("Group number not found in bot's name. Name format should be 'Group # Bot'.")
 
-        # Find the mod channel in each guild that this bot should report to
+    def _find_mod_channels(self):
+        """Find the mod channel for each guild"""
         for guild in self.guilds:
             for channel in guild.text_channels:
                 if channel.name == f'group-{self.group_num}-mod':
@@ -82,91 +91,109 @@ class ModBot(discord.Client):
         guild_id = reaction.message.guild.id
         mod_channel = self.mod_channels.get(guild_id)
 
+        # Only handle reactions in mod channels
         if not mod_channel or reaction.message.channel.id != mod_channel.id:
             return
 
-        emoji = str(reaction.emoji)
+        await self._handle_mod_reaction(reaction, user)
 
+    async def _handle_mod_reaction(self, reaction, user):
+        """Process moderator reactions and take appropriate actions"""
+        emoji = str(reaction.emoji)
+        channel = reaction.message.channel
+        mod_name = user.name
+
+        # Initial violation assessment
         if emoji == "🟢":
-            await reaction.message.channel.send(f"Moderator {user.name} has confirmed this is a violation.")
-            # Add escalation decision reactions to the same message
-            await reaction.message.channel.send(
-                "Does this content require escalation due to severity or legal concerns?\n"
-                "React ✅ (Yes) or ❌ (No)."
-            )
-            await reaction.message.add_reaction("✅")
-            await reaction.message.add_reaction("❌")
+            await channel.send(f"Moderator {mod_name} has confirmed this is a violation.")
+            await self._add_escalation_reactions(reaction.message)
 
         elif emoji == "🔴":
-            await reaction.message.channel.send(f"Moderator {user.name} has determined this is not a violation.")
-            await reaction.message.channel.send("The user who submitted the message will be warned.")
+            await channel.send(f"Moderator {mod_name} has determined this is not a violation.")
+            await channel.send("The user who submitted the message will be warned.")
 
         elif emoji == "🟡":
-            await reaction.message.channel.send(
-                f"Moderator {user.name} is not sure if this report is a violation. Requesting second review.\n"
+            await channel.send(
+                f"Moderator {mod_name} is not sure if this report is a violation. Requesting second review.\n"
                 "Does this content violate the Community Standards on 'Coercion involving intimate content'?\n"
                 "React 🟢 (Yes) or 🔴 (No)."
             )
 
+        # Escalation decisions
         elif emoji == "✅":
-            await reaction.message.channel.send(
+            await channel.send(
                 "Escalating to Trust & Safety or Legal Team for further investigation and potential law enforcement referral."
             )
 
         elif emoji == "❌":
-            action_prompt = (
-                "**Which type of action will you take?**\n"
-                "React with one of the following:\n\n"
-                "🗑️ — Delete content → Content deleted and user informed\n"
-                "⚠️ — Content Labeling / Warning Banners → User informed about warning\n"
-                "🫥 — Soft Interventions:\n"
-                "  🫣 — Content blur\n"
-                "  📵 — Temporary Messaging Block\n"
-                "  📚 — Send Educational Warning\n"
-                "⛔ — Disable account → Content deleted and user notified of account suspension"
-            )
-            await reaction.message.channel.send(action_prompt)
-            await reaction.message.add_reaction("🗑️")
-            await reaction.message.add_reaction("⚠️")
-            await reaction.message.add_reaction("🫥")
-            await reaction.message.add_reaction("⛔")
-            await reaction.message.add_reaction("🫣")
-            await reaction.message.add_reaction("📵")
-            await reaction.message.add_reaction("📚")
+            await self._show_action_options(channel)
 
-        elif emoji == "🗑️":
-            await reaction.message.channel.send("Content deleted and user informed.")
+        # Moderation actions
+        elif emoji in ["🗑️", "⚠️", "🫥", "⛔", "🫣", "📵", "📚"]:
+            await self._handle_mod_action(emoji, channel)
 
-        elif emoji == "⚠️":
-            await reaction.message.channel.send("Content labeled with a warning banner. User informed about warning.")
+    async def _add_escalation_reactions(self, message):
+        """Add escalation decision reactions"""
+        await message.channel.send(
+            "Does this content require escalation due to severity or legal concerns?\n"
+            "React ✅ (Yes) or ❌ (No)."
+        )
+        await message.add_reaction("✅")
+        await message.add_reaction("❌")
 
-        elif emoji == "🫥":
-            await reaction.message.channel.send(
+    async def _show_action_options(self, channel):
+        """Display moderation action options"""
+        action_prompt = (
+            "**Which type of action will you take?**\n"
+            "React with one of the following:\n\n"
+            "🗑️ — Delete content → Content deleted and user informed\n"
+            "⚠️ — Content Labeling / Warning Banners → User informed about warning\n"
+            "🫥 — Soft Interventions:\n"
+            "  🫣 — Content blur\n"
+            "  📵 — Temporary Messaging Block\n"
+            "  📚 — Send Educational Warning\n"
+            "⛔ — Disable account → Content deleted and user notified of account suspension"
+        )
+        message = await channel.send(action_prompt)
+        
+        # Add all action reactions
+        actions = ["🗑️", "⚠️", "🫥", "⛔", "🫣", "📵", "📚"]
+        for action in actions:
+            await message.add_reaction(action)
+
+    async def _handle_mod_action(self, emoji, channel):
+        """Handle specific moderation actions"""
+        actions = {
+            "🗑️": "Content deleted and user informed.",
+            "⚠️": "Content labeled with a warning banner. User informed about warning.",
+            "🫣": "Soft intervention applied. User informed about the action.",
+            "📵": "Soft intervention applied. User informed about the action.",
+            "📚": "Soft intervention applied. User informed about the action.",
+            "⛔": "Account disabled. Content deleted and user notified of account suspension."
+        }
+
+        if emoji == "🫥":
+            await channel.send(
                 "Soft intervention selected. Please choose:\n"
                 "🫣 — Content blur\n"
                 "📵 — Temporary Messaging Block\n"
                 "📚 — Send Educational Warning"
             )
-            await reaction.message.add_reaction("🫣")
-            await reaction.message.add_reaction("📵")
-            await reaction.message.add_reaction("📚")
+            for soft_action in ["🫣", "📵", "📚"]:
+                await channel.add_reaction(soft_action)
+        else:
+            await channel.send(actions.get(emoji, "Action taken."))
 
-        elif emoji in ["🫣", "📵", "📚"]:
-            await reaction.message.channel.send("Soft intervention applied. User informed about the action.")
-
-        elif emoji == "⛔":
-            await reaction.message.channel.send("Account disabled. Content deleted and user notified of account suspension.")
-            
     async def handle_dm(self, message):
+        """Handle direct messages (reporting flow)"""
         # Handle a help message
         if message.content == Report.HELP_KEYWORD:
-            reply =  "Use the `report` command to begin the reporting process.\n"
-            reply += "Use the `cancel` command to cancel the report process.\n"
+            reply = ("Use the `report` command to begin the reporting process.\n"
+                    "Use the `cancel` command to cancel the report process.\n")
             await message.channel.send(reply)
             return
 
         author_id = message.author.id
-        responses = []
 
         # Only respond to messages if they're part of a reporting flow
         if author_id not in self.reports and not message.content.startswith(Report.START_KEYWORD):
@@ -178,14 +205,15 @@ class ModBot(discord.Client):
 
         # Let the report class handle this message; forward all the messages it returns to us
         responses = await self.reports[author_id].handle_message(message)
-        for r in responses:
-            await message.channel.send(r)
+        for response in responses:
+            await message.channel.send(response)
 
         # If the report is complete or cancelled, remove it from our map
         if self.reports[author_id].report_complete():
             self.reports.pop(author_id)
 
     async def handle_channel_message(self, message):
+        """Handle messages in guild channels"""
         # Only handle messages sent in the "group-#" channel
         if not message.channel.name == f'group-{self.group_num}':
             return
@@ -194,8 +222,10 @@ class ModBot(discord.Client):
         mod_channel = self.mod_channels.get(message.guild.id)
         if mod_channel:
             await mod_channel.send(f'Forwarded message:\n{message.author.name}: "{message.content}"')
-            scores = self.eval_text(message.content)
-            await mod_channel.send(self.code_format(scores))
+            
+            # Evaluate message content (placeholder for AI integration)
+            evaluation = self.eval_text(message.content)
+            await mod_channel.send(self.code_format(evaluation))
 
     def eval_text(self, message):
         ''''
@@ -210,8 +240,14 @@ class ModBot(discord.Client):
         evaluated, insert your code here for formatting the string to be 
         shown in the mod channel. 
         '''
-        return "Evaluated: '" + text+ "'"
+        return f"Evaluated: '{text}'"
 
 
-client = ModBot()
-client.run(discord_token)
+def main():
+    """Main function to run the bot"""
+    client = ModBot()
+    client.run(discord_token)
+
+
+if __name__ == "__main__":
+    main()
