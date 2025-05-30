@@ -27,16 +27,30 @@ class DatabaseManager:
                 message_data['flagged_at'] = datetime.now()
             
             # Add to collection
-            doc_id, doc_ref = self.db.collection('flagged_messages').add(message_data)
-            print(f"Logged flagged message with ID: {doc_ref.id}")
-            return doc_ref.id
+            doc_ref = self.db.collection('flagged_messages').add(message_data)
+            print(f"Logged flagged message with ID: {doc_ref[1].id}")
+            return doc_ref[1].id
             
         except Exception as e:
             print(f"Error logging flagged message: {e}")
             return None
+
+    async def update_flagged_message_status(self, doc_id: str, status: str, moderator: str):
+        """Update the status of a flagged message after moderator decision"""
+        try:
+            doc_ref = self.db.collection('flagged_messages').document(doc_id)
+            doc_ref.update({
+                'moderation_status': status,
+                'moderator_decision': moderator,
+                'decision_timestamp': datetime.now()
+            })
+            print(f"Updated flagged message {doc_id} status to {status}")
+            
+        except Exception as e:
+            print(f"Error updating flagged message status: {e}")
     
     async def update_user_stats(self, user_id: str, guild_id: str, username: str = "",
-                               flagged: bool = False, violation: bool = False):
+                               flagged: bool = False, violation: bool = False, false_positive: bool = False):
         try:
             doc_id = f"{user_id}_{guild_id}"
             doc_ref = self.db.collection('user_statistics').document(doc_id)
@@ -47,12 +61,17 @@ class DatabaseManager:
                 data = doc.to_dict()
                 stats = data.get('stats', {})
                 
-                stats['total_messages'] = stats.get('total_messages', 0) + 1
+                if not violation and not false_positive:
+                    stats['total_messages'] = stats.get('total_messages', 0) + 1
+                    
                 if flagged:
                     stats['flagged_messages'] = stats.get('flagged_messages', 0) + 1
+                    
                 if violation:
                     stats['violation_count'] = stats.get('violation_count', 0) + 1
                     stats['last_violation'] = datetime.now()
+                if false_positive:
+                    stats['false_positives'] = stats.get('false_positives', 0) + 1
                 
                 # Update document
                 doc_ref.update({
@@ -69,9 +88,9 @@ class DatabaseManager:
                     'username': username,
                     'guild_id': guild_id,
                     'stats': {
-                        'total_messages': 1,
+                        'total_messages': 1 if not violation and not false_positive else 0,
                         'flagged_messages': 1 if flagged else 0,
-                        'false_positives': 0,
+                        'false_positives': 1 if false_positive else 0,
                         'violation_count': 1 if violation else 0,
                         'last_violation': datetime.now() if violation else None,
                         'risk_score': 0
@@ -89,9 +108,9 @@ class DatabaseManager:
     async def log_moderation_action(self, action_data: Dict):
         try:
             action_data['timestamp'] = datetime.now()
-            doc_id, doc_ref = self.db.collection('moderation_actions').add(action_data)
-            print(f"Logged moderation action with ID: {doc_ref.id}")
-            return doc_ref.id
+            doc_ref = self.db.collection('moderation_actions').add(action_data)
+            print(f"Logged moderation action with ID: {doc_ref[1].id}")
+            return doc_ref[1].id
             
         except Exception as e:
             print(f"Error logging moderation action: {e}")

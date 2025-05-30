@@ -1,4 +1,3 @@
-# bot.py
 import discord
 from discord.ext import commands
 import os
@@ -7,6 +6,8 @@ import logging
 import re
 import requests
 from report import Report
+from ai_classifier import AIClassifier
+from database import DatabaseManager
 import pdb
 
 # Set up logging to the console
@@ -35,6 +36,9 @@ class ModBot(discord.Client):
         self.group_num = None
         self.mod_channels = {} # Map from guild to the mod channel id for that guild
         self.reports = {} # Map from user IDs to the state of their report
+        self.ai_classifier = None
+        self.database = None
+        self.pending_decisions = {}
 
     async def on_ready(self):
         """Called when bot connects to Discord"""
@@ -48,6 +52,22 @@ class ModBot(discord.Client):
         
         # Find mod channels for each guild
         self._find_mod_channels()
+        
+        # Initialize AI and database
+        await self._initialize_ai_and_database()
+
+    async def _initialize_ai_and_database(self):
+        try:
+            print("Initializing classifier")
+            self.ai_classifier = AIClassifier()
+            
+            print("Initializing database connection")
+            self.database = DatabaseManager()
+            
+            print("Classifier and database systems ready")
+            
+        except Exception as e:
+            print(f"Error initializing Classifier/Database: {e}")
 
     def _parse_group_number(self):
         """Extract group number from bot's name"""
@@ -102,15 +122,18 @@ class ModBot(discord.Client):
         emoji = str(reaction.emoji)
         channel = reaction.message.channel
         mod_name = user.name
+        message_id = str(reaction.message.id)
 
         # Initial violation assessment
         if emoji == "🟢":
             await channel.send(f"Moderator {mod_name} has confirmed this is a violation.")
             await self._add_escalation_reactions(reaction.message)
+            await self._handle_violation_confirmation(message_id, mod_name)
 
         elif emoji == "🔴":
             await channel.send(f"Moderator {mod_name} has determined this is not a violation.")
-            await channel.send("The user who submitted the message will be warned.")
+            await channel.send("The user who submitted the message will be notified.")
+            await self._handle_false_positive(message_id, mod_name)
 
         elif emoji == "🟡":
             await channel.send(
@@ -131,6 +154,61 @@ class ModBot(discord.Client):
         # Moderation actions
         elif emoji in ["🗑️", "⚠️", "🫥", "⛔", "🫣", "📵", "📚"]:
             await self._handle_mod_action(emoji, channel)
+
+        # Log moderation action to database
+        if self.database:
+            try:
+                action_data = {
+                    'moderator_id': str(user.id),
+                    'moderator_username': mod_name,
+                    'action_type': emoji,
+                    'action_details': f'Moderator reaction: {emoji}'
+                }
+                await self.database.log_moderation_action(action_data)
+            except Exception as e:
+                print(f"Error logging moderation action: {e}")
+
+    async def _handle_violation_confirmation(self, mod_message_id, mod_name):
+        """Handle when moderator confirms a violation"""
+        if mod_message_id in self.pending_decisions:
+            decision_data = self.pending_decisions[mod_message_id]
+            
+            if self.database:
+                await self.database.update_user_stats(
+                    decision_data['user_id'], 
+                    decision_data['guild_id'], 
+                    decision_data['username'],
+                    violation=True
+                )
+                
+                # Update the flagged message record
+                if decision_data.get('flagged_msg_id'):
+                    await self.database.update_flagged_message_status(
+                        decision_data['flagged_msg_id'], 
+                        'confirmed_violation',
+                        mod_name
+                    )
+
+    async def _handle_false_positive(self, mod_message_id, mod_name):
+        """Handle when moderator determines it's not a violation (false positive)"""
+        if mod_message_id in self.pending_decisions:
+            decision_data = self.pending_decisions[mod_message_id]
+            
+            if self.database:
+                await self.database.update_user_stats(
+                    decision_data['user_id'], 
+                    decision_data['guild_id'], 
+                    decision_data['username'],
+                    false_positive=True
+                )
+                
+                # Update the flagged message record
+                if decision_data.get('flagged_msg_id'):
+                    await self.database.update_flagged_message_status(
+                        decision_data['flagged_msg_id'], 
+                        'false_positive',
+                        mod_name
+                    )
 
     async def _add_escalation_reactions(self, message):
         """Add escalation decision reactions"""
@@ -218,21 +296,103 @@ class ModBot(discord.Client):
         if not message.channel.name == f'group-{self.group_num}':
             return
 
-        # Forward the message to the mod channel
-        mod_channel = self.mod_channels.get(message.guild.id)
-        if mod_channel:
-            await mod_channel.send(f'Forwarded message:\n{message.author.name}: "{message.content}"')
-            
-            # Evaluate message content (placeholder for AI integration)
-            evaluation = self.eval_text(message.content)
-            await mod_channel.send(self.code_format(evaluation))
+        # Update user statistics for total messages
+        if self.database:
+            await self.database.update_user_stats(
+                str(message.author.id), 
+                str(message.guild.id), 
+                message.author.name
+            )
 
-    def eval_text(self, message):
+        # Evaluate message content (placeholder for AI integration)
+        evaluation = await self.eval_text(message.content, message)
+        
+        # Only send to mod channel if flagged for review
+        if isinstance(evaluation, dict) and evaluation.get('is_violation', False):
+            # Update user stats for flagged message
+            if self.database:
+                await self.database.update_user_stats(
+                    str(message.author.id), 
+                    str(message.guild.id), 
+                    message.author.name,
+                    flagged=True
+                )
+            
+            mod_channel = self.mod_channels.get(message.guild.id)
+            if mod_channel:
+                await mod_channel.send(f'**Flagged Message** from {message.author.name}:\n"{message.content}"')
+                await mod_channel.send(self.code_format(evaluation))
+                
+                # Add reaction options for flagged messages
+                sent_message = await mod_channel.send(
+                    "**Moderator Actions:** Does this content violate Community Standards?\n"
+                    "-React 🟢 if this is a violation\n"
+                    "-React 🔴 if this is not a violation\n"
+                    "-React 🟡 if you are unsure"
+                )
+                await sent_message.add_reaction("🟢")
+                await sent_message.add_reaction("🔴")
+                await sent_message.add_reaction("🟡")
+                
+                # Store decision tracking data
+                flagged_msg_id = evaluation.get('db_record_id')
+                self.pending_decisions[str(sent_message.id)] = {
+                    'user_id': str(message.author.id),
+                    'guild_id': str(message.guild.id),
+                    'username': message.author.name,
+                    'message_content': message.content,
+                    'flagged_msg_id': flagged_msg_id
+                }
+
+    async def eval_text(self, message_content, message_obj=None):
         ''''
         TODO: Once you know how you want to evaluate messages in your channel, 
         insert your code here! This will primarily be used in Milestone 3. 
         '''
-        return message
+        if self.ai_classifier:
+            try:
+                # Get user statistics for context
+                user_stats = None
+                if self.database and message_obj:
+                    user_stats = await self.database.get_user_stats(
+                        str(message_obj.author.id), 
+                        str(message_obj.guild.id)
+                    )
+                
+                # Use enhanced classification with user context
+                if user_stats and hasattr(self.ai_classifier, 'classify_message_with_user_context'):
+                    ai_result = await self.ai_classifier.classify_message_with_user_context(
+                        message_content, user_stats
+                    )
+                else:
+                    # Fallback to basic classification
+                    ai_result = await self.ai_classifier.classify_message(message_content)
+                
+                # Log to database if flagged
+                if ai_result['is_violation'] and self.database and message_obj:
+                    message_data = {
+                        'message_id': str(message_obj.id),
+                        'guild_id': str(message_obj.guild.id),
+                        'channel_id': str(message_obj.channel.id),
+                        'user_id': str(message_obj.author.id),
+                        'username': message_obj.author.name,
+                        'content': message_content,
+                        'timestamp': message_obj.created_at,
+                        'source': 'ai_detection',
+                        'ai_scores': ai_result['ai_scores'],
+                        'final_classification': ai_result['final_classification'],
+                        'moderation_status': 'pending',
+                        'user_context_used': user_stats is not None
+                    }
+                    # Store the database record ID in the result
+                    db_record_id = await self.database.log_flagged_message(message_data)
+                    ai_result['db_record_id'] = db_record_id
+                
+                return ai_result
+            except Exception as e:
+                print(f"Classifier evaluation failed: {e}")
+                return message_content
+        return message_content
 
     def code_format(self, text):
         ''''
@@ -240,7 +400,57 @@ class ModBot(discord.Client):
         evaluated, insert your code here for formatting the string to be 
         shown in the mod channel. 
         '''
-        return f"Evaluated: '{text}'"
+        if isinstance(text, dict) and 'ai_scores' in text:
+            ai_scores = text['ai_scores']
+            details = text['analysis_details']
+            
+            formatted_output = f"**Classifier Analysis Results:**\n"
+            formatted_output += f"-Combined Score: {ai_scores['combined_score']}%"
+            
+            # Show if user context influenced the score
+            if 'user_risk_adjustment' in ai_scores:
+                original_score = ai_scores.get('original_combined_score', ai_scores['combined_score'])
+                adjustment = ai_scores['user_risk_adjustment']
+                if adjustment != 0:
+                    formatted_output += f" (Original: {original_score}%, Adjusted: {'+' if adjustment > 0 else ''}{adjustment}%)"
+                formatted_output += f"\n"
+            else:
+                formatted_output += f"\n"
+                
+            formatted_output += f"-Classification: {text['final_classification']}\n"
+            formatted_output += f"-Confidence Level: {text['confidence_level']}\n"
+            
+            # Show user context if available
+            user_context = details.get('user_context')
+            if user_context:
+                formatted_output += f"\n**User Context:**\n"
+                formatted_output += f"-Risk Level: {user_context['risk_level']}\n"
+                formatted_output += f"-Total Messages: {user_context['total_messages']}\n"
+                formatted_output += f"-Violation Rate: {user_context['violation_rate']:.1%}\n"
+                formatted_output += f"-False Positive Rate: {user_context['false_positive_rate']:.1%}\n"
+            
+            formatted_output += f"\n**Detailed Scores:**\n"
+            formatted_output += f"-Gemini: {ai_scores['gemini_confidence']}% ({ai_scores['gemini_classification']})\n"
+            formatted_output += f"-Natural Language: {ai_scores['natural_language_confidence']:.1f}%\n"
+            
+            if details['gemini_risk_indicators']:
+                formatted_output += f"\n**Risk Indicators:**\n"
+                for indicator in details['gemini_risk_indicators']:
+                    formatted_output += f"-{indicator}\n"
+            
+            if details['nl_threat_patterns']:
+                formatted_output += f"\n**Threat Patterns:**\n"
+                for pattern in details['nl_threat_patterns']:
+                    formatted_output += f"-{pattern}\n"
+            
+            if text['is_violation']:
+                formatted_output += f"\n**Flagged for Review** (Score > 75%)\n"
+            else:
+                formatted_output += f"\n**Below violation threshold**\n"
+            
+            return formatted_output
+        else:
+            return f"Evaluated: '{text}'"
 
 
 def main():

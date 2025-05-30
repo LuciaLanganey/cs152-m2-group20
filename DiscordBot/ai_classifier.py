@@ -295,6 +295,150 @@ Respond with ONLY a JSON object:
             return "low"
         else:
             return "minimal"
+
+    async def classify_message_with_user_context(self, message_content: str, user_stats: Dict = None) -> Dict:
+        base_result = await self.classify_message(message_content)
+
+        if not user_stats:
+            return base_result
+        
+        user_risk_score = self._calculate_user_risk_score(user_stats)
+        adjusted_result = self._adjust_classification_with_user_context(base_result, user_risk_score, user_stats)
+        return adjusted_result
+    
+    def _calculate_user_risk_score(self, user_stats: Dict) -> float:
+        stats = user_stats.get('stats', {})
+        
+        total_messages = stats.get('total_messages', 1)
+        flagged_messages = stats.get('flagged_messages', 0)
+        violation_count = stats.get('violation_count', 0)
+        false_positives = stats.get('false_positives', 0)
+        
+        # Calculate risk factors
+        flagged_rate = flagged_messages / max(total_messages, 1)
+        violation_rate = violation_count / max(flagged_messages, 1) if flagged_messages > 0 else 0
+        false_positive_rate = false_positives / max(flagged_messages, 1) if flagged_messages > 0 else 0
+        
+        # Risk score calculation
+        risk_score = 0.0
+        
+        # High flagged rate, increases risk
+        if flagged_rate > 0.1:
+            risk_score += 0.3
+        elif flagged_rate > 0.05:
+            risk_score += 0.15
+        
+        # High violation confirmation rate, increases risk
+        if violation_rate > 0.7:
+            risk_score += 0.4
+        elif violation_rate > 0.5:
+            risk_score += 0.2
+        
+        # High false positive rate, decreases risk
+        if false_positive_rate > 0.5:
+            risk_score -= 0.2
+        
+        last_violation = stats.get('last_violation')
+        if last_violation:
+            try:
+                from datetime import datetime
+                
+                # Handle Firestore DatetimeWithNanoseconds object
+                if hasattr(last_violation, '__class__') and 'DatetimeWithNanoseconds' in str(type(last_violation)):
+                    last_violation_dt = datetime(
+                        last_violation.year,
+                        last_violation.month, 
+                        last_violation.day,
+                        last_violation.hour,
+                        last_violation.minute,
+                        last_violation.second,
+                        last_violation.microsecond
+                    )
+                elif hasattr(last_violation, 'timestamp'):
+                    # Regular Firestore timestamp object
+                    last_violation_dt = last_violation.to_datetime().replace(tzinfo=None)
+                elif isinstance(last_violation, str):
+                    # ISO string format
+                    last_violation_dt = datetime.fromisoformat(last_violation.replace('Z', '+00:00')).replace(tzinfo=None)
+                elif isinstance(last_violation, datetime):
+                    # Already a datetime object
+                    last_violation_dt = last_violation.replace(tzinfo=None)
+                else:
+                    # Unknown format, skip this check
+                    print(f"Unknown last_violation format: {type(last_violation)}")
+                    last_violation_dt = None
+                
+                if last_violation_dt:
+                    # Both datetimes are now timezone-naive
+                    now_naive = datetime.now()
+                    
+                    days_since = (now_naive - last_violation_dt).days
+                    if days_since < 7:  # Recent violation
+                        risk_score += 0.3
+                    elif days_since < 30:
+                        risk_score += 0.1
+                        
+            except Exception as e:
+                print(f"Error processing last_violation date: {e}")
+                print(f"last_violation type: {type(last_violation)}")
+                print(f"last_violation value: {last_violation}")
+                pass
+        
+        return max(0.0, min(1.0, risk_score))  # Limit between 0 and 1
+    
+    def _adjust_classification_with_user_context(self, base_result: Dict, user_risk_score: float, user_stats: Dict) -> Dict:
+        enhanced_result = base_result.copy()
+        
+        original_score = base_result['ai_scores']['combined_score']
+        
+        risk_adjustment = 0
+        
+        # High-risk users, increase sensitivity, lower threshold for flagging
+        if user_risk_score > 0.6:
+            risk_adjustment = 15
+        elif user_risk_score > 0.3:
+            risk_adjustment = 8
+        
+        # Low-risk users with high false positive rate, decrease sensitivity
+        false_positive_rate = user_stats.get('stats', {}).get('false_positives', 0) / max(user_stats.get('stats', {}).get('flagged_messages', 1), 1)
+        if false_positive_rate > 0.6 and user_risk_score < 0.2:
+            risk_adjustment = -10
+        
+        adjusted_score = min(100, max(0, original_score + risk_adjustment))
+        
+        # Update scores
+        enhanced_result['ai_scores']['combined_score'] = adjusted_score
+        enhanced_result['ai_scores']['user_risk_adjustment'] = risk_adjustment
+        enhanced_result['ai_scores']['original_combined_score'] = original_score
+        
+        enhanced_result['is_violation'] = adjusted_score > 75
+        
+        # Add user context to analysis details
+        enhanced_result['analysis_details']['user_context'] = {
+            'user_risk_score': round(user_risk_score, 3),
+            'risk_adjustment_applied': risk_adjustment,
+            'total_messages': user_stats.get('stats', {}).get('total_messages', 0),
+            'violation_rate': user_stats.get('stats', {}).get('violation_count', 0) / max(user_stats.get('stats', {}).get('flagged_messages', 1), 1),
+            'false_positive_rate': false_positive_rate,
+            'risk_level': self._get_user_risk_level(user_risk_score)
+        }
+        
+        if adjusted_score > 85:
+            enhanced_result['final_classification'] = 'high_confidence_violation_with_user_context'
+        elif adjusted_score > 75:
+            enhanced_result['final_classification'] = 'likely_violation_with_user_context'
+        
+        return enhanced_result
+    
+    def _get_user_risk_level(self, risk_score: float) -> str:
+        if risk_score > 0.7:
+            return "high_risk_user"
+        elif risk_score > 0.4:
+            return "medium_risk_user"
+        elif risk_score > 0.1:
+            return "low_risk_user"
+        else:
+            return "minimal_risk_user"
     
     def _combine_classifications(self, gemini_result: Dict, nl_result: Dict, message: str) -> Dict:        
         # Extract scores

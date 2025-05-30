@@ -1,4 +1,3 @@
-# report.py
 from enum import Enum, auto
 import discord
 import re
@@ -65,6 +64,7 @@ class Report:
         self.selected_type = None
         self.selected_subtype = None
         self.additional_details = []
+        self.ai_evaluation = None
         
         # Flow flags
         self.violence_subtype_flag = False
@@ -144,10 +144,47 @@ class Report:
         try:
             reported_message = await channel.fetch_message(int(message_id))
             self.reported_message = reported_message
+            
+            # Evaluate the message with AI first
+            await self._evaluate_message_with_ai()
+            
             return await self._show_message_and_types(reported_message)
         except discord.errors.NotFound:
             return ["It seems this message was deleted or never existed. "
                    "Please try again or say `cancel` to cancel."]
+    
+    async def _evaluate_message_with_ai(self):
+        if self.client.ai_classifier and self.reported_message:
+            try:
+                print(f"Evaluating reported message with classifier")
+                self.ai_evaluation = await self.client.ai_classifier.classify_message(
+                    self.reported_message.content
+                )
+                print(f"AI evaluation complete. Score: {self.ai_evaluation.get('ai_scores', {}).get('combined_score', 'N/A')}%")
+                
+                # Log to database if flagged
+                if self.ai_evaluation.get('is_violation', False) and self.client.database:
+                    message_data = {
+                        'message_id': str(self.reported_message.id),
+                        'guild_id': str(self.reported_message.guild.id),
+                        'channel_id': str(self.reported_message.channel.id),
+                        'user_id': str(self.reported_message.author.id),
+                        'username': self.reported_message.author.name,
+                        'content': self.reported_message.content,
+                        'timestamp': self.reported_message.created_at,
+                        'source': 'user_report',
+                        'ai_scores': self.ai_evaluation['ai_scores'],
+                        'final_classification': self.ai_evaluation['final_classification'],
+                        'moderation_status': 'pending',
+                        'reporter_id': str(self.message_object.author.id),
+                        'reporter_username': self.message_object.author.name
+                    }
+                    db_record_id = await self.client.database.log_flagged_message(message_data)
+                    self.ai_evaluation['db_record_id'] = db_record_id
+                    
+            except Exception as e:
+                print(f"Error evaluating reported message with AI: {e}")
+                self.ai_evaluation = None
     
     async def _show_message_and_types(self, message):
         """Display the found message and report type options"""
@@ -349,10 +386,29 @@ class Report:
                     summary = self._build_report_summary()
                     mod_msg = await mod_channel.send(summary)
                     
-                    # Add reaction options for moderators
-                    await mod_msg.add_reaction("🟢")  # Violation
-                    await mod_msg.add_reaction("🔴")  # Not a violation  
-                    await mod_msg.add_reaction("🟡")  # Unsure
+                    # Add AI evaluation if available
+                    ai_msg = None
+                    if self.ai_evaluation:
+                        ai_summary = self._build_ai_evaluation_summary()
+                        ai_msg = await mod_channel.send(ai_summary)
+                    
+                    # Add reaction options
+                    reaction_target = ai_msg if ai_msg else mod_msg
+                    await reaction_target.add_reaction("🟢")
+                    await reaction_target.add_reaction("🔴")  
+                    await reaction_target.add_reaction("🟡")
+                    
+                    # Store decision tracking data for user reports
+                    if self.ai_evaluation and self.ai_evaluation.get('db_record_id'):
+                        self.client.pending_decisions[str(reaction_target.id)] = {
+                            'user_id': str(self.reported_message.author.id),
+                            'guild_id': str(self.reported_message.guild.id),
+                            'username': self.reported_message.author.name,
+                            'message_content': self.reported_message.content,
+                            'flagged_msg_id': self.ai_evaluation.get('db_record_id'),
+                            'source': 'user_report',
+                            'reporter_id': str(self.message_object.author.id)
+                        }
                     
                     print(f"Report sent to mod channel in guild {guild.name}")
                     return
@@ -373,10 +429,35 @@ class Report:
         if self.additional_details:
             summary += f"**Additional Details:** {', '.join(self.additional_details)}\n"
         
-        summary += f"\n**Moderator Actions:** Does this content violate the Community Standards involving {self.selected_type}?\n"
-        summary += "- React '🟢' if this is a violation\n"
-        summary += "- React '🔴' if this is not a violation\n" 
-        summary += "- React '🟡' if you are unsure\n"
+        return summary
+    
+    def _build_ai_evaluation_summary(self):
+        """Build AI evaluation summary for moderators"""
+        if not self.ai_evaluation:
+            return "Not available"
+        
+        ai_scores = self.ai_evaluation.get('ai_scores', {})
+        details = self.ai_evaluation.get('analysis_details', {})
+        
+        summary = f"**Classifier Results:**\n"
+        summary += f"- Combined Score: {ai_scores.get('combined_score', 'N/A')}%\n"
+        summary += f"- Classification: {self.ai_evaluation.get('final_classification', 'N/A')}\n"
+        summary += f"-AI Assessment: {'FLAGGED' if self.ai_evaluation.get('is_violation', False) else 'Not Flagged'}\n"
+        
+        summary += f"\n**AI Scores:**\n"
+        summary += f"-Gemini: {ai_scores.get('gemini_confidence', 'N/A')}% ({ai_scores.get('gemini_classification', 'N/A')})\n"
+        summary += f"-Natural Language: {ai_scores.get('natural_language_confidence', 'N/A'):.1f}%\n"
+        
+        if details.get('gemini_risk_indicators'):
+            summary += f"\n**Risk Indicators:**\n"
+            for indicator in details['gemini_risk_indicators']:
+                summary += f"-{indicator}\n"
+        
+        summary += f"\n**Human Moderator Review Required:**\n"
+        summary += f"Does this content violate the Community Standards involving {self.selected_type}?\n"
+        summary += "-React '🟢' if this is a violation\n"
+        summary += "-React '🔴' if this is not a violation\n" 
+        summary += "-React '🟡' if you are unsure\n"
         
         return summary
     
