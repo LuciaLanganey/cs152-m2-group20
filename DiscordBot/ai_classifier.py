@@ -5,6 +5,7 @@ import google.generativeai as genai
 from google.cloud import language_v1
 import asyncio
 from datetime import datetime
+from language_utils import LanguageHandler
 
 class AIClassifier:
     def __init__(self):
@@ -18,17 +19,29 @@ class AIClassifier:
 
         self.language_client = language_v1.LanguageServiceClient()
         
+        self.language_handler = LanguageHandler()
+        
         print("AI Classifier initialized with Gemini and Natural Language APIs")
     
     async def classify_message(self, message_content: str) -> Dict:
         print(f"Analyzing message: '{message_content[:50]}...'")
         
+        lang_result = self.language_handler.process_message(message_content)
+        analysis_text = lang_result['analysis_text']
+        
+        if lang_result['language_info']['language_code'] != 'en':
+            print(f"Detected {lang_result['language_info']['language_name']}, using translation")
+        
         # Run both analyses
-        gemini_result = await self._classify_with_gemini(message_content)
-        nl_result = await self._enhanced_natural_language_analysis(message_content)
+        gemini_result = await self._classify_with_gemini(analysis_text)
+        nl_result = await self._enhanced_natural_language_analysis(analysis_text)
         
         # Combine results
         combined_result = self._combine_classifications(gemini_result, nl_result, message_content)
+        
+        combined_result['language_info'] = lang_result['language_info']
+        combined_result['translation_info'] = lang_result['translation_info']
+        combined_result['analysis_text'] = analysis_text
         
         print(f"Analysis complete. Combined score: {combined_result['ai_scores']['combined_score']}%")
         return combined_result
@@ -78,6 +91,7 @@ class AIClassifier:
             Analyze this message: "{message}"
 
             Be more sensitive to implicit threats and coercion involving intimate content.
+            NOTE: This text may have been translated from another language, so look for the meaning and intent rather than exact wording.
 
             Respond with ONLY a JSON object:
             {{
@@ -650,7 +664,9 @@ async def test_classifier():
         "Send me money or I'll share those photos I have of you.",
         "I have your intimate pictures and will post them online unless you pay me $500.",
         "Give me $200 by tomorrow or everyone will see what you did.",
-        "I know where you live and I have recordings of our conversation."
+        "I know where you live and I have recordings of our conversation.",
+        "Envíame $500 o publicaré tus fotos en línea",
+        "Tengo tus fotos intimas. Send dinero or I post them online"
     ]
     
     for i, message in enumerate(test_messages, 1):
@@ -658,6 +674,12 @@ async def test_classifier():
         result = await classifier.classify_message(message)
         
         print(f"Message: '{message}'")
+        
+        if result.get('language_info', {}).get('language_code') != 'en':
+            print(f"Language: {result['language_info']['language_name']}")
+            if result.get('translation_info'):
+                print(f"Translated: '{result['translation_info']['translated_text']}'")
+        
         print(f"Final Classification: {result['final_classification']}")
         print(f"Combined Score: {result['ai_scores']['combined_score']}%")
         print(f"Is Violation: {result['is_violation']}")
@@ -667,9 +689,7 @@ async def test_classifier():
         if details['gemini_risk_indicators']:
             print(f"Gemini Risk Indicators: {details['gemini_risk_indicators']}")
         if details['nl_threat_patterns']:
-            print(f"NL Threat Patterns: {details['nl_threat_patterns']}")
-        
-        print(f"NL Sentiment: {details['nl_sentiment']} | NL Threat Level: {details['nl_threat_level']}")
+            print(f"NL Sentiment: {details['nl_sentiment']} | NL Threat Level: {details['nl_threat_level']}")
         print()
 
 async def test_system_comparison():
