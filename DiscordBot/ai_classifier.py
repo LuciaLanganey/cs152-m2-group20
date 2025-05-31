@@ -37,50 +37,89 @@ class AIClassifier:
         """Use Gemini to classify sexual extortion content"""
         try:
             prompt = f"""
-You are an expert content moderator specializing ONLY in sexual extortion and sextortion detection.
+            You are an expert content moderator specializing in sexual extortion and sextortion detection.
 
-CRITICAL: This message should get a HIGH score (70-100) ONLY if it contains ALL of these:
-1. Clear possession or threat involving INTIMATE/SEXUAL photos, videos, or content
-2. Explicit demand for money/payment to prevent sharing
-3. Direct threat to distribute the intimate content
+            CRITICAL: Give HIGH scores (70-100) for messages that contain ANY of these sextortion patterns:
 
-Examples of HIGH scores (70-100):
-- "Send me $500 or I'll post your nude photos online"
-- "Pay me or I'll share your intimate videos with everyone"
-- "I have your private pictures and will release them unless you give me money"
+            Explicity Sextorion (90-100):
+            - Clear possession of intimate content + payment demand + distribution threat
+            - "Send me $500 or I'll post your nude photos online"
+            - "Pay me or I'll share your intimate videos with everyone"
 
-Examples that should get LOW scores (0-30):
-- "Hey, how are you doing today?" → 5-10 (friendly greeting)
-- "I'm really upset about what happened" → 10-15 (emotional expression)
-- "You better apologize or else!" → 20-30 (vague threat, no intimate content)
-- "Pay me $100 and I won't tell your secret" → 30-40 (blackmail but no intimate content mentioned)
+            Strong Sextortion Indicators (70-89):
+            - Possession of intimate content + implied consequences
+            - "I have your private pictures and will release them unless you comply"
+            - "Your device has been compromised. I found explicit content and will distribute it"
+            - "I created a deepfake video featuring you. Want to prevent its release?"
 
-Analyze this message: "{message}"
+            Moderate Sextortion Patterns (50-69):
+            - Intimate content threats without explicit payment demands
+            - "Imagine what your friends and family will think when they see these photos"
+            - "I'll delete but I want something in return. I want more pics of you"
+            - "How many guys have you sent dirty pics to because I have some of you"
 
-Give a confidence_score of 0-30 unless the message clearly involves intimate/sexual content threats with payment demands.
+            General Threats (30-49):
+            - Vague threats or blackmail without intimate content
+            - "Pay me $100 and I won't tell your secret"
+            - "You better apologize or else!"
 
-Respond with ONLY a JSON object:
-{{
-    "is_sexual_extortion": true/false,
-    "confidence_score": 0-100,
-    "classification": "sexual_extortion" or "general_threat" or "safe",
-    "reasoning": "brief explanation focusing on presence/absence of intimate content threats and payment demands",
-    "risk_indicators": ["specific", "elements", "found"]
-}}
-"""
+            Safe Content (0-29):
+            - Normal conversation, complaints, or non-threatening messages
+            - "Hey, how are you doing today?"
+            - "I'm really upset about what happened"
+
+            Key Indicators to look for:
+            - Words like: pics, photos, videos, nudes, intimate, explicit, screenshots, deepfake
+            - Possession language: "I have", "I found", "I recorded", "I created"
+            - Distribution threats: "share", "post", "release", "distribute", "show everyone"
+            - Leverage language: "unless", "or else", "prevent", "comply"
+            - Victim targeting: "friends and family", "reputation", "ruin you"
+
+            Analyze this message: "{message}"
+
+            Be more sensitive to implicit threats and coercion involving intimate content.
+
+            Respond with ONLY a JSON object:
+            {{
+                "is_sexual_extortion": true/false,
+                "confidence_score": 0-100,
+                "classification": "explicit_sextortion" or "strong_sextortion" or "moderate_sextortion" or "general_threat" or "safe",
+                "reasoning": "brief explanation of why this score was assigned",
+                "risk_indicators": ["specific", "elements", "found"]
+            }}
+            
+            IMPORTANT: Respond with ONLY the JSON object, no additional text or code blocks.
+            """
             
             response = self.gemini_model.generate_content(prompt)
             
-            # Parse JSON response
             try:
                 response_text = response.text.strip()
                 
-                if response_text.startswith('```json'):
-                    response_text = response_text.replace('```json', '').replace('```', '').strip()
-                elif response_text.startswith('```'):
-                    response_text = response_text.replace('```', '').strip()
+                # Handle multiple code block formats
+                if '```json' in response_text:
+                    # Extract content between ```json and ```
+                    start = response_text.find('```json') + 7
+                    end = response_text.find('```', start)
+                    if end != -1:
+                        response_text = response_text[start:end].strip()
+                    else:
+                        response_text = response_text[start:].strip()
+                elif '```' in response_text:
+                    # Handle generic code blocks
+                    start = response_text.find('```') + 3
+                    end = response_text.find('```', start)
+                    if end != -1:
+                        response_text = response_text[start:end].strip()
+                    else:
+                        response_text = response_text[start:].strip()
                 
+                # Clean up any remaining artifacts
+                response_text = response_text.strip('`').strip()
+                
+                # Try to parse JSON
                 result = json.loads(response_text)
+                
                 return {
                     'gemini_confidence': result.get('confidence_score', 0),
                     'gemini_classification': result.get('classification', 'unknown'),
@@ -88,12 +127,48 @@ Respond with ONLY a JSON object:
                     'gemini_risk_indicators': result.get('risk_indicators', []),
                     'gemini_is_violation': result.get('is_sexual_extortion', False)
                 }
-            except json.JSONDecodeError:
-                print(f"Gemini response parsing failed. Raw response: {response.text}")
+                
+            except json.JSONDecodeError as e:
+                print(f"Gemini JSON parsing failed. Error: {e}")
+                print(f"Cleaned text: {response_text}")
+                print(f"Original response: {response.text}")
+                
+                # Fallback: try to extract key values manually
+                try:
+                    import re
+                    confidence_match = re.search(r'"confidence_score":\s*(\d+)', response.text)
+                    classification_match = re.search(r'"classification":\s*"([^"]+)"', response.text)
+                    is_violation_match = re.search(r'"is_sexual_extortion":\s*(true|false)', response.text)
+                    
+                    confidence = int(confidence_match.group(1)) if confidence_match else 0
+                    classification = classification_match.group(1) if classification_match else 'unknown'
+                    is_violation = is_violation_match.group(1) == 'true' if is_violation_match else False
+                    
+                    print(f"Fallback parsing successful: confidence={confidence}, classification={classification}")
+                    
+                    return {
+                        'gemini_confidence': confidence,
+                        'gemini_classification': classification,
+                        'gemini_reasoning': 'Parsed via fallback method',
+                        'gemini_risk_indicators': [],
+                        'gemini_is_violation': is_violation
+                    }
+                except Exception as fallback_error:
+                    print(f"Fallback parsing also failed: {fallback_error}")
+                    return {
+                        'gemini_confidence': 0,
+                        'gemini_classification': 'json_parse_error',
+                        'gemini_reasoning': 'Failed to parse Gemini response as JSON',
+                        'gemini_risk_indicators': [],
+                        'gemini_is_violation': False
+                    }
+
+            except Exception as e:
+                print(f"Unexpected error in Gemini classification: {e}")
                 return {
                     'gemini_confidence': 0,
-                    'gemini_classification': 'json_parse_error',
-                    'gemini_reasoning': 'Failed to parse Gemini response as JSON',
+                    'gemini_classification': 'error',
+                    'gemini_reasoning': f'API Error: {str(e)}',
                     'gemini_risk_indicators': [],
                     'gemini_is_violation': False
                 }
@@ -337,53 +412,7 @@ Respond with ONLY a JSON object:
         # High false positive rate, decreases risk
         if false_positive_rate > 0.5:
             risk_score -= 0.2
-        
-        last_violation = stats.get('last_violation')
-        if last_violation:
-            try:
-                from datetime import datetime
                 
-                # Handle Firestore DatetimeWithNanoseconds object
-                if hasattr(last_violation, '__class__') and 'DatetimeWithNanoseconds' in str(type(last_violation)):
-                    last_violation_dt = datetime(
-                        last_violation.year,
-                        last_violation.month, 
-                        last_violation.day,
-                        last_violation.hour,
-                        last_violation.minute,
-                        last_violation.second,
-                        last_violation.microsecond
-                    )
-                elif hasattr(last_violation, 'timestamp'):
-                    # Regular Firestore timestamp object
-                    last_violation_dt = last_violation.to_datetime().replace(tzinfo=None)
-                elif isinstance(last_violation, str):
-                    # ISO string format
-                    last_violation_dt = datetime.fromisoformat(last_violation.replace('Z', '+00:00')).replace(tzinfo=None)
-                elif isinstance(last_violation, datetime):
-                    # Already a datetime object
-                    last_violation_dt = last_violation.replace(tzinfo=None)
-                else:
-                    # Unknown format, skip this check
-                    print(f"Unknown last_violation format: {type(last_violation)}")
-                    last_violation_dt = None
-                
-                if last_violation_dt:
-                    # Both datetimes are now timezone-naive
-                    now_naive = datetime.now()
-                    
-                    days_since = (now_naive - last_violation_dt).days
-                    if days_since < 7:  # Recent violation
-                        risk_score += 0.3
-                    elif days_since < 30:
-                        risk_score += 0.1
-                        
-            except Exception as e:
-                print(f"Error processing last_violation date: {e}")
-                print(f"last_violation type: {type(last_violation)}")
-                print(f"last_violation value: {last_violation}")
-                pass
-        
         return max(0.0, min(1.0, risk_score))  # Limit between 0 and 1
     
     def _adjust_classification_with_user_context(self, base_result: Dict, user_risk_score: float, user_stats: Dict) -> Dict:
@@ -395,14 +424,14 @@ Respond with ONLY a JSON object:
         
         # High-risk users, increase sensitivity, lower threshold for flagging
         if user_risk_score > 0.6:
-            risk_adjustment = 15
-        elif user_risk_score > 0.3:
             risk_adjustment = 8
+        elif user_risk_score > 0.3:
+            risk_adjustment = 3
         
         # Low-risk users with high false positive rate, decrease sensitivity
         false_positive_rate = user_stats.get('stats', {}).get('false_positives', 0) / max(user_stats.get('stats', {}).get('flagged_messages', 1), 1)
         if false_positive_rate > 0.6 and user_risk_score < 0.2:
-            risk_adjustment = -10
+            risk_adjustment = -20
         
         adjusted_score = min(100, max(0, original_score + risk_adjustment))
         
@@ -411,7 +440,7 @@ Respond with ONLY a JSON object:
         enhanced_result['ai_scores']['user_risk_adjustment'] = risk_adjustment
         enhanced_result['ai_scores']['original_combined_score'] = original_score
         
-        enhanced_result['is_violation'] = adjusted_score > 75
+        enhanced_result['is_violation'] = adjusted_score > 50
         
         # Add user context to analysis details
         enhanced_result['analysis_details']['user_context'] = {
@@ -473,7 +502,7 @@ Respond with ONLY a JSON object:
             
             # Final Decision
             'final_classification': final_classification,
-            'is_violation': combined_score > 75,
+            'is_violation': combined_score > 50,
             'confidence_level': self._get_confidence_level(combined_score),
             
             # Detailed Analysis
@@ -673,7 +702,7 @@ async def test_system_comparison():
 if __name__ == "__main__":
     import sys
     
-    if len(sys.argv) > 1 and sys.argv[1] == "compare": # Note: Use the 'compare' argument to run system comparison
+    if len(sys.argv) > 1 and sys.argv[1] == "compare":
         asyncio.run(test_system_comparison())
     else:
         asyncio.run(test_classifier())
