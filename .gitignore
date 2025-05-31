@@ -1,4 +1,5 @@
 *.log
 DiscordBot/tokens.json
 DiscordBot/google-credentials.json
+dashboard/google-credentials.json
 TABot/tokens.json

@@ -351,6 +351,10 @@ class ModBot(discord.Client):
         '''
         if self.ai_classifier:
             try:
+                thresholds = await self.database.get_guild_thresholds()
+                violation_threshold = thresholds['violation_threshold']
+                high_confidence_threshold = thresholds['high_confidence_threshold']
+                
                 # Get user statistics for context
                 user_stats = None
                 if self.database and message_obj:
@@ -359,14 +363,44 @@ class ModBot(discord.Client):
                         str(message_obj.guild.id)
                     )
                 
-                # Use enhanced classification with user context
+                # Use enhanced classification with user context and regex rules
                 if user_stats and hasattr(self.ai_classifier, 'classify_message_with_user_context'):
                     ai_result = await self.ai_classifier.classify_message_with_user_context(
                         message_content, user_stats
                     )
+                    if hasattr(self.ai_classifier, 'classify_message_with_regex'):
+                        base_score = ai_result['ai_scores']['combined_score']
+                        
+                        # Apply regex rules
+                        from regex_engine import RegexEngine
+                        regex_engine = RegexEngine()
+                        regex_result = await regex_engine.apply_regex_rules(message_content)
+                        regex_bonus = regex_result['total_regex_score'] * 100
+                        
+                        # Update the result with regex enhancement
+                        ai_result['ai_scores']['combined_score'] = min(100, base_score + regex_bonus)
+                        ai_result['ai_scores']['base_score_with_user_context'] = base_score
+                        ai_result['ai_scores']['regex_bonus'] = regex_bonus
+                        ai_result['regex_patterns_matched'] = regex_result['patterns_matched']
                 else:
-                    # Fallback to basic classification
-                    ai_result = await self.ai_classifier.classify_message(message_content)
+                    # Fallback to basic classification WITH regex
+                    ai_result = await self.ai_classifier.classify_message_with_regex(message_content)
+                
+                combined_score = ai_result['ai_scores']['combined_score']
+                ai_result['is_violation'] = combined_score > violation_threshold
+                
+                ai_result['thresholds_used'] = {
+                    'violation_threshold': violation_threshold,
+                    'high_confidence_threshold': high_confidence_threshold,
+                    'score_vs_threshold': f"{combined_score}% vs {violation_threshold}%"
+                }
+                
+                if combined_score > high_confidence_threshold:
+                    ai_result['final_classification'] = 'high_confidence_violation'
+                elif combined_score > violation_threshold:
+                    ai_result['final_classification'] = 'likely_violation'
+                else:
+                    ai_result['final_classification'] = 'below_threshold'
                 
                 # Log to database if flagged
                 if ai_result['is_violation'] and self.database and message_obj:
@@ -382,7 +416,9 @@ class ModBot(discord.Client):
                         'ai_scores': ai_result['ai_scores'],
                         'final_classification': ai_result['final_classification'],
                         'moderation_status': 'pending',
-                        'user_context_used': user_stats is not None
+                        'user_context_used': user_stats is not None,
+                        'thresholds_used': ai_result['thresholds_used'],
+                        'regex_patterns_matched': ai_result.get('regex_patterns_matched', [])  # Include regex info
                     }
                     # Store the database record ID in the result
                     db_record_id = await self.database.log_flagged_message(message_data)
@@ -406,6 +442,10 @@ class ModBot(discord.Client):
             
             formatted_output = f"**Classifier Analysis Results:**\n"
             formatted_output += f"-Combined Score: {ai_scores['combined_score']}%"
+            
+            if 'thresholds_used' in text:
+                thresholds = text['thresholds_used']
+                formatted_output += f" (Threshold: {thresholds['violation_threshold']}%)"
             
             # Show if user context influenced the score
             if 'user_risk_adjustment' in ai_scores:

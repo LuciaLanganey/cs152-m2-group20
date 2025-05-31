@@ -178,6 +178,88 @@ class DatabaseManager:
             
         except Exception as e:
             print(f"Error updating system metrics: {e}")
+            
+    # Dashboard-related functions
+    async def get_pending_flagged_messages(self):
+        """Get messages awaiting moderator review"""
+        return self.db.collection('flagged_messages')\
+            .where('moderation_status', '==', 'pending')\
+            .limit(20).stream()
+
+    async def save_custom_rule(self, pattern, weight, description):
+        """Save a custom regex rule"""
+        self.db.collection('custom_rules').add({
+            'pattern': pattern,
+            'weight': weight,
+            'description': description,
+            'created_at': datetime.now()
+        })
+        
+    async def get_custom_rules(self):
+        """Get all custom regex rules"""
+        try:
+            docs = self.db.collection('custom_rules').stream()
+            rules = []
+            for doc in docs:
+                data = doc.to_dict()
+                data['id'] = doc.id
+                rules.append(data)
+            return rules
+        except Exception as e:
+            print(f"Error getting custom rules: {e}")
+            return []
+
+    async def save_custom_rule(self, pattern, weight, description):
+        """Save a custom regex rule"""
+        try:
+            rule_data = {
+                'pattern': pattern,
+                'weight': weight,
+                'description': description,
+                'created_at': datetime.now()
+            }
+            doc_ref = self.db.collection('custom_rules').add(rule_data)
+            print(f"Saved custom rule: {pattern}")
+            return doc_ref[1].id
+        except Exception as e:
+            print(f"Error saving custom rule: {e}")
+            return None
+
+    async def delete_custom_rule(self, rule_id):
+        """Delete a custom regex rule"""
+        try:
+            self.db.collection('custom_rules').document(rule_id).delete()
+            print(f"Deleted custom rule: {rule_id}")
+        except Exception as e:
+            print(f"Error deleting custom rule: {e}")
+            
+    async def get_guild_thresholds(self):
+        """Get current AI thresholds"""
+        try:
+            doc = self.db.collection('system_config').document('ai_thresholds').get()
+            if doc.exists:
+                return doc.to_dict()
+            else:
+                return {
+                    'violation_threshold': 50,
+                    'high_confidence_threshold': 85
+                }
+        except Exception as e:
+            print(f"Error getting thresholds: {e}")
+            return {'violation_threshold': 50, 'high_confidence_threshold': 85}
+
+    async def save_guild_thresholds(self, violation_threshold, high_confidence_threshold):
+        """Save AI thresholds"""
+        try:
+            threshold_data = {
+                'violation_threshold': violation_threshold,
+                'high_confidence_threshold': high_confidence_threshold,
+                'updated_at': datetime.now()
+            }
+            self.db.collection('system_config').document('ai_thresholds').set(threshold_data)
+            print(f"Updated thresholds: violation={violation_threshold}, confidence={high_confidence_threshold}")
+        except Exception as e:
+            print(f"Error saving thresholds: {e}")
 
 # Create sample data for testing
 async def create_sample_data():

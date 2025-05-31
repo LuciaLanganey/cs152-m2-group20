@@ -6,6 +6,7 @@ from google.cloud import language_v1
 import asyncio
 from datetime import datetime
 from language_utils import LanguageHandler
+from regex_check import RegexCheck
 
 class AIClassifier:
     def __init__(self, violation_threshold=50, high_confidence_threshold=85):
@@ -23,6 +24,8 @@ class AIClassifier:
         self.language_client = language_v1.LanguageServiceClient()
         
         self.language_handler = LanguageHandler()
+        
+        self.regex_check = RegexCheck()
         
         print("AI Classifier initialized with Gemini and Natural Language APIs")
     
@@ -441,14 +444,14 @@ class AIClassifier:
         
         # High-risk users, increase sensitivity, lower threshold for flagging
         if user_risk_score > 0.6:
-            risk_adjustment = 8
-        elif user_risk_score > 0.3:
             risk_adjustment = 3
+        elif user_risk_score > 0.3:
+            risk_adjustment = 1
         
         # Low-risk users with high false positive rate, decrease sensitivity
         false_positive_rate = user_stats.get('stats', {}).get('false_positives', 0) / max(user_stats.get('stats', {}).get('flagged_messages', 1), 1)
         if false_positive_rate > 0.6 and user_risk_score < 0.2:
-            risk_adjustment = -20
+            risk_adjustment = -5
         
         adjusted_score = min(100, max(0, original_score + risk_adjustment))
         
@@ -575,157 +578,30 @@ class AIClassifier:
         else:
             return 'very_low'
     
-    async def compare_ai_systems(self, test_messages: List[str]) -> Dict:
-        print("Running AI system comparison\n")
+    async def classify_message_with_regex(self, message_content: str) -> Dict:
+        print(f"Analyzing message with regex: '{message_content[:50]}...'")
         
-        results = {
-            'comparison_timestamp': datetime.now(),
-            'total_messages': len(test_messages),
-            'individual_results': [],
-            'performance_summary': {}
-        }
+        base_result = await self.classify_message(message_content)
         
-        gemini_scores = []
-        nl_scores = []
-        agreements = []
+        regex_result = await self.regex_check.apply_regex_rules(message_content)
         
-        for i, message in enumerate(test_messages, 1):
-            print(f"--- Comparing Message {i} ---")
-            result = await self.classify_message(message)
-            
-            gemini_score = result['research_data']['individual_scores']['gemini_only']
-            nl_score = result['research_data']['individual_scores']['nl_only']
-            
-            gemini_scores.append(gemini_score)
-            nl_scores.append(nl_score)
-            
-            agreement = abs(gemini_score - nl_score) < 20
-            agreements.append(agreement)
-            
-            individual_result = {
-                'message': message,
-                'gemini_score': gemini_score,
-                'nl_score': nl_score,
-                'combined_score': result['ai_scores']['combined_score'],
-                'agreement': agreement,
-                'final_classification': result['final_classification']
-            }
-            
-            results['individual_results'].append(individual_result)
-            if agreement:
-                print(f"Message {i} - Agreement: Yes")
-            else:
-                print(f"Message {i} - Agreement: No")
-            print(f"Gemini: {gemini_score} | NL: {nl_score} | Combined: {result['ai_scores']['combined_score']}")
+        base_score = base_result['ai_scores']['combined_score']
+        regex_bonus = regex_result['total_regex_score'] * 100
         
-        agreement_rate = sum(agreements) / len(agreements) * 100
-        correlation = self._calculate_correlation(gemini_scores, nl_scores)
+        regex_bonus = min(regex_bonus, 10)
         
-        results['performance_summary'] = {
-            'agreement_rate': round(agreement_rate, 1),
-            'gemini_avg_score': round(sum(gemini_scores) / len(gemini_scores), 2),
-            'nl_avg_score': round(sum(nl_scores) / len(nl_scores), 2),
-            'combined_avg_score': round(sum(r['combined_score'] for r in results['individual_results']) / len(results['individual_results']), 2),
-            'correlation': correlation,
-            'flagged_by_gemini': sum(1 for score in gemini_scores if score > 70),
-            'flagged_by_nl': sum(1 for score in nl_scores if score > 70),
-            'flagged_by_combined': sum(1 for r in results['individual_results'] if r['combined_score'] > 75)
-        }
+        enhanced_result = base_result.copy()
+        enhanced_result['ai_scores']['combined_score'] = min(100, base_score + regex_bonus)
+        enhanced_result['ai_scores']['base_ai_score'] = base_score
+        enhanced_result['ai_scores']['regex_bonus'] = regex_bonus
+        enhanced_result['regex_patterns_matched'] = regex_result['patterns_matched']
+        enhanced_result['regex_rules_applied'] = regex_result['rules_applied']
         
-        return results
-    
-    def _calculate_correlation(self, scores1: List[float], scores2: List[float]) -> float:
-        # Correlation calculation using Pearson's method
-        if len(scores1) != len(scores2) or len(scores1) == 0:
-            return 0.0
+        enhanced_result['is_violation'] = enhanced_result['ai_scores']['combined_score'] > 50
         
-        mean1 = sum(scores1) / len(scores1)
-        mean2 = sum(scores2) / len(scores2)
+        enhanced_result['final_classification'] = self._determine_final_classification(
+            enhanced_result['ai_scores']['combined_score']
+        )
         
-        numerator = sum((scores1[i] - mean1) * (scores2[i] - mean2) for i in range(len(scores1)))
-        
-        sum_sq1 = sum((score - mean1) ** 2 for score in scores1)
-        sum_sq2 = sum((score - mean2) ** 2 for score in scores2)
-        
-        if sum_sq1 == 0 or sum_sq2 == 0:
-            return 0.0
-        
-        denominator = (sum_sq1 * sum_sq2) ** 0.5
-        return round(numerator / denominator, 3) if denominator != 0 else 0.0
-
-# Testing
-async def test_classifier():
-    print("Testing Enhanced AI Classifier \n")
-    
-    classifier = AIClassifier()
-    
-    test_messages = [
-        "Hey, how are you doing today?",
-        "I'm really upset about what happened.",
-        "You better apologize or else!",
-        "Pay me $100 and I won't tell anyone your secret.",
-        "Send me money or I'll share those photos I have of you.",
-        "I have your intimate pictures and will post them online unless you pay me $500.",
-        "Give me $200 by tomorrow or everyone will see what you did.",
-        "I know where you live and I have recordings of our conversation.",
-        "Envíame $500 o publicaré tus fotos en línea",
-        "Tengo tus fotos intimas. Send dinero or I post them online"
-    ]
-    
-    for i, message in enumerate(test_messages, 1):
-        print(f"--- Test {i} ---")
-        result = await classifier.classify_message(message)
-        
-        print(f"Message: '{message}'")
-        
-        if result.get('language_info', {}).get('language_code') != 'en':
-            print(f"Language: {result['language_info']['language_name']}")
-            if result.get('translation_info'):
-                print(f"Translated: '{result['translation_info']['translated_text']}'")
-        
-        print(f"Final Classification: {result['final_classification']}")
-        print(f"Combined Score: {result['ai_scores']['combined_score']}%")
-        print(f"Is Violation: {result['is_violation']}")
-        print(f"Confidence Level: {result['confidence_level']}")
-        
-        details = result['analysis_details']
-        if details['gemini_risk_indicators']:
-            print(f"Gemini Risk Indicators: {details['gemini_risk_indicators']}")
-        if details['nl_threat_patterns']:
-            print(f"NL Sentiment: {details['nl_sentiment']} | NL Threat Level: {details['nl_threat_level']}")
-        print()
-
-async def test_system_comparison():
-    print("Testing System Comparison\n")
-    
-    classifier = AIClassifier()
-    
-    test_messages = [
-        "Hello there, how are you?",
-        "I'm really angry about this situation!",
-        "You better fix this or there will be consequences.",
-        "I have some compromising information about you.",
-        "Pay me $200 or I'll share your private photos.",
-        "Send me money now or I'll post your pictures online.",
-        "I'll release those videos unless you give me what I want.",
-        "Your family will see everything if you don't cooperate by tomorrow."
-    ]
-    
-    results = await classifier.compare_ai_systems(test_messages)
-    
-    print("\n Comparison Results:")
-    summary = results['performance_summary']
-    print(f"Agreement Rate: {summary['agreement_rate']}%")
-    print(f"Gemini Average Score: {summary['gemini_avg_score']}")
-    print(f"Natural Language Average Score: {summary['nl_avg_score']}")
-    print(f"Combined Average Score: {summary['combined_avg_score']}")
-    print(f"Score Correlation: {summary['correlation']}")
-    print(f"Messages Flagged - Gemini: {summary['flagged_by_gemini']} | NL: {summary['flagged_by_nl']} | Combined: {summary['flagged_by_combined']}")
-
-if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) > 1 and sys.argv[1] == "compare":
-        asyncio.run(test_system_comparison())
-    else:
-        asyncio.run(test_classifier())
+        print(f"Analysis complete. Base: {base_score}%, Regex: +{regex_bonus}%, Total: {enhanced_result['ai_scores']['combined_score']}%")
+        return enhanced_result
