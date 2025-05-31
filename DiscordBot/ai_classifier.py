@@ -8,7 +8,7 @@ from datetime import datetime
 from language_utils import LanguageHandler
 
 class AIClassifier:
-    def __init__(self):
+    def __init__(self, violation_threshold=50, high_confidence_threshold=85):
         with open('tokens.json') as f:
             tokens = json.load(f)
         
@@ -16,6 +16,9 @@ class AIClassifier:
         
         genai.configure(api_key=tokens['gemini'])
         self.gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        self.violation_threshold = violation_threshold
+        self.high_confidence_threshold = high_confidence_threshold
 
         self.language_client = language_v1.LanguageServiceClient()
         
@@ -454,7 +457,7 @@ class AIClassifier:
         enhanced_result['ai_scores']['user_risk_adjustment'] = risk_adjustment
         enhanced_result['ai_scores']['original_combined_score'] = original_score
         
-        enhanced_result['is_violation'] = adjusted_score > 50
+        enhanced_result['is_violation'] = adjusted_score > self.violation_threshold
         
         # Add user context to analysis details
         enhanced_result['analysis_details']['user_context'] = {
@@ -466,7 +469,7 @@ class AIClassifier:
             'risk_level': self._get_user_risk_level(user_risk_score)
         }
         
-        if adjusted_score > 85:
+        if adjusted_score > self.high_confidence_threshold:
             enhanced_result['final_classification'] = 'high_confidence_violation_with_user_context'
         elif adjusted_score > 75:
             enhanced_result['final_classification'] = 'likely_violation_with_user_context'
@@ -516,7 +519,7 @@ class AIClassifier:
             
             # Final Decision
             'final_classification': final_classification,
-            'is_violation': combined_score > 50,
+            'is_violation': combined_score > self.violation_threshold,
             'confidence_level': self._get_confidence_level(combined_score),
             
             # Detailed Analysis
@@ -549,7 +552,7 @@ class AIClassifier:
         }
     
     def _determine_final_classification(self, combined_score: float) -> str:
-        if combined_score > 85:
+        if combined_score > self.high_confidence_threshold:
             return 'high_confidence_violation'
         elif combined_score > 75:
             return 'likely_violation'
