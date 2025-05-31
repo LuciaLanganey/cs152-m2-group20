@@ -4,7 +4,7 @@ import json
 from google.cloud import language_v1
 import google.generativeai as genai
 
-os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '../google-credentials.json'
+os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '../config/google-credentials.json'
 
 # Load tokens
 with open('../tokens.json') as f:

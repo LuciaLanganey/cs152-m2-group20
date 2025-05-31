@@ -15,7 +15,7 @@ class DatabaseManager:
         """Initialize Firestore client"""
         
         # Set environment variable for Google credentials
-        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = 'google-credentials.json'
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '../config/google-credentials.json'
         
         # Initialize Firestore client
         self.db = firestore.Client()

@@ -3,7 +3,7 @@ from google.cloud import firestore
 
 # Test Firestore connection and operations
 def test_firestore_connection():    
-    creds_file = '../google-credentials.json'
+    creds_file = '../config/google-credentials.json'
     
     if os.path.exists(creds_file):
         print(f"Credentials file found: {creds_file}")

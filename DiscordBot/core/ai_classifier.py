@@ -10,10 +10,10 @@ from regex_check import RegexCheck
 
 class AIClassifier:
     def __init__(self, violation_threshold=50, high_confidence_threshold=85):
-        with open('tokens.json') as f:
+        with open('../config/tokens.json') as f:
             tokens = json.load(f)
         
-        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = 'google-credentials.json'
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '../config/google-credentials.json'
         
         genai.configure(api_key=tokens['gemini'])
         self.gemini_model = genai.GenerativeModel('gemini-1.5-flash')

@@ -1,5 +1,7 @@
 import pandas as pd
 import asyncio
+import sys
+sys.path.append('../core')
 from ai_classifier import AIClassifier
 from database import DatabaseManager
 from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
@@ -312,7 +314,7 @@ async def main():
     
     tester = ClassifierTest()
     await tester.initialize()
-    df = tester.load_test_dataset("M3_Dataset - Full Sorted .csv", sample_size=50)
+    df = tester.load_test_dataset("../data/M3_Dataset - Full Sorted .csv", sample_size=50)
     
     # Run all 4 tests
     base_results = await tester.test_base_classifier(df)

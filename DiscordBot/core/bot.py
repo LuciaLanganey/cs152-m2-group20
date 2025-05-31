@@ -5,9 +5,9 @@ import json
 import logging
 import re
 import requests
-from report import Report
 from ai_classifier import AIClassifier
 from database import DatabaseManager
+from report import Report
 import pdb
 
 # Set up logging to the console
@@ -18,7 +18,7 @@ handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(me
 logger.addHandler(handler)
 
 # There should be a file called 'tokens.json' inside the same folder as this file
-token_path = 'tokens.json'
+token_path = '../config/tokens.json'
 if not os.path.isfile(token_path):
     raise Exception(f"{token_path} not found!")
 with open(token_path) as f:
@@ -372,9 +372,9 @@ class ModBot(discord.Client):
                         base_score = ai_result['ai_scores']['combined_score']
                         
                         # Apply regex rules
-                        from regex_engine import RegexEngine
-                        regex_engine = RegexEngine()
-                        regex_result = await regex_engine.apply_regex_rules(message_content)
+                        from regex_check import RegexCheck
+                        regex_check = RegexCheck()
+                        regex_result = await regex_check.apply_regex_rules(message_content)
                         regex_bonus = regex_result['total_regex_score'] * 100
                         
                         # Update the result with regex enhancement
