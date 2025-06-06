@@ -323,6 +323,12 @@ class ModBot(discord.Client):
                 await mod_channel.send(f'**Flagged Message** from {message.author.name}:\n"{message.content}"')
                 await mod_channel.send(self.code_format(evaluation))
                 
+                if 'regex_patterns_matched' in evaluation and evaluation['regex_patterns_matched']:
+                    regex_info = "**Regex Rules Matched:**\n"
+                    for pattern in evaluation['regex_patterns_matched']:
+                        regex_info += f"- {pattern['description'] or pattern['pattern']} (Weight: +{pattern['weight']*100:.1f}%)\n"
+                    await mod_channel.send(regex_info)
+                
                 # Add reaction options for flagged messages
                 sent_message = await mod_channel.send(
                     "**Moderator Actions:** Does this content violate Community Standards?\n"
