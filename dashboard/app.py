@@ -5,7 +5,7 @@ import os
 from functools import wraps
 import re
 
-sys.path.append('../DiscordBot')
+sys.path.append('../DiscordBot/core')
 from regex_check import RegexCheck
 from database import DatabaseManager
 

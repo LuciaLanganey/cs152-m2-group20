@@ -3,6 +3,7 @@ from google.cloud import firestore
 from datetime import datetime
 from typing import Dict, List, Optional
 import asyncio
+from pathlib import Path
 
 # Database Structure
 # Collections:
@@ -15,8 +16,8 @@ class DatabaseManager:
         """Initialize Firestore client"""
         
         # Set environment variable for Google credentials
-        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '../config/google-credentials.json'
-        
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = 'google-credentials.json'
+       
         # Initialize Firestore client
         self.db = firestore.Client()
         print("Database connection initialized")
