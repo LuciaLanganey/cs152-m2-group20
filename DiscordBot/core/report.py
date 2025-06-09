@@ -12,6 +12,7 @@ class State(Enum):
     AWAITING_REPORT_SUBTYPE = auto()
     CONTINUING_BULLYING_AND_UNWANTED_FLOW = auto()
     AWAITING_THREAT_DETAILS = auto()
+    AWAITING_BLOCK_DECISION = auto()
     AWAITING_DETAILS = auto()
     REPORT_COMPLETE = auto()
 
@@ -26,11 +27,18 @@ class Report:
     
     # Report type mapping
     REPORT_TYPES = {
-        "1": "Disinformation",
-        "2": "Violence", 
-        "3": "Deceptive Content",
-        "4": "Bullying and Unwanted Contact",
-        "5": "Other"
+        "1": "Sexual Coercion/Sextortion",
+        "2": "Harassment or Bullying", 
+        "3": "Violence",
+        "4": "Deceptive Content",
+        "5": "False Information"
+    }
+    
+    # Harassment subtypes
+    HARASSMENT_SUBTYPES = {
+        "1": "Repeated unwanted messages",
+        "2": "Insults or slurs",
+        "3": "Threats of harm"
     }
     
     # Violence subtypes
@@ -47,13 +55,6 @@ class Report:
         "3": "Scam"
     }
     
-    # Bullying subtypes
-    BULLYING_SUBTYPES = {
-        "1": "Coersion involving intimate content",
-        "2": "Bullying",
-        "3": "Stalking"
-    }
-    
     def __init__(self, client):
         self.state = State.REPORT_START
         self.client = client
@@ -65,12 +66,6 @@ class Report:
         self.selected_subtype = None
         self.additional_details = []
         self.ai_evaluation = None
-        
-        # Flow flags
-        self.violence_subtype_flag = False
-        self.deceptive_subtype_flag = False
-        self.bullying_subtype_flag = False
-        self.other_type_flag = False
     
     async def handle_message(self, message):
         """Main message handler for the reporting flow"""
@@ -93,6 +88,7 @@ class Report:
             State.AWAITING_REPORT_SUBTYPE: self._handle_report_subtype,
             State.CONTINUING_BULLYING_AND_UNWANTED_FLOW: self._handle_bullying_flow,
             State.AWAITING_THREAT_DETAILS: self._handle_threat_details,
+            State.AWAITING_BLOCK_DECISION: self._handle_block_decision,
             State.AWAITING_DETAILS: self._handle_additional_details
         }
         
@@ -192,11 +188,11 @@ class Report:
         
         reply = (f"I found this message:\n```{message.author.name}: {message.content}```\n"
                 "What is wrong with this content? Please respond with a number.\n\n"
-                "1. Disinformation\n"
-                "2. Violence\n" 
-                "3. Deceptive Content\n"
-                "4. Bullying and Unwanted Contact\n"
-                "5. Other\n")
+                "1. Sexual Coercion/Sextortion\n"
+                "2. Harassment or Bullying\n" 
+                "3. Violence\n"
+                "4. Deceptive Content\n"
+                "5. False Information\n")
         
         self.state = State.AWAITING_REPORT_TYPE
         return [reply]
@@ -211,25 +207,28 @@ class Report:
         self.selected_type = self.REPORT_TYPES[selection]
         
         # Handle different types
-        if selection == "1":  # Disinformation
-            return await self._complete_simple_report()
+        if selection == "1":  # Sexual Coercion/Sextortion
+            reply = ("You selected Sexual Coercion/Sextortion.\n\n"
+                    "Are you under 18 years old? Please respond with 'yes' or 'no'.")
+            
+            self.state = State.CONTINUING_BULLYING_AND_UNWANTED_FLOW
+            return [reply]
         
-        elif selection == "2":  # Violence
-            self.violence_subtype_flag = True
+        elif selection == "2":  # Harassment or Bullying
+            return self._show_harassment_subtypes()
+        
+        elif selection == "3":  # Violence
             return self._show_violence_subtypes()
         
-        elif selection == "3":  # Deceptive Content
-            self.deceptive_subtype_flag = True
+        elif selection == "4":  # Deceptive Content
             return self._show_deceptive_subtypes()
         
-        elif selection == "4":  # Bullying and Unwanted Contact
-            self.bullying_subtype_flag = True
-            return self._show_bullying_subtypes()
-        
-        elif selection == "5":  # Other
-            self.other_type_flag = True
-            self.state = State.AWAITING_DETAILS
-            return ["You selected Other. Please provide details."]
+        elif selection == "5":  # False Information
+            reply = ("You selected False Information.\n\n"
+                    "Do you want to block this user? Please respond with 'yes' or 'no'.")
+            
+            self.state = State.AWAITING_BLOCK_DECISION
+            return [reply]
     
     def _show_violence_subtypes(self):
         """Show violence subtype options"""
@@ -252,13 +251,12 @@ class Report:
         self.state = State.AWAITING_REPORT_SUBTYPE
         return [reply]
     
-    def _show_bullying_subtypes(self):
-        """Show bullying subtype options"""
-        reply = ("You selected Bullying and Unwanted Contact. Which type of unwanted content? "
-                "Please respond with a number.\n\n"
-                "1. Coersion involving intimate content\n"
-                "2. Bullying\n"
-                "3. Stalking\n")
+    def _show_harassment_subtypes(self):
+        """Show harassment subtype options"""
+        reply = ("You selected Harassment or Bullying. Which type of content? Please respond with a number.\n"
+                "1. Repeated unwanted messages\n"
+                "2. Insults or slurs\n"
+                "3. Threats of harm\n")
         
         self.state = State.AWAITING_REPORT_SUBTYPE
         return [reply]
@@ -267,14 +265,27 @@ class Report:
         """Handle report subtype selection"""
         selection = message.content.strip()
         
-        if self.violence_subtype_flag:
+        if self.selected_type == "Harassment or Bullying":
+            return await self._handle_harassment_subtype(selection)
+        elif self.selected_type == "Violence":
             return await self._handle_violence_subtype(selection)
-        elif self.deceptive_subtype_flag:
+        elif self.selected_type == "Deceptive Content":
             return await self._handle_deceptive_subtype(selection)
-        elif self.bullying_subtype_flag:
-            return await self._handle_bullying_subtype(selection)
         
         return ["Invalid selection. Please try again."]
+    
+    async def _handle_harassment_subtype(self, selection):
+        """Handle harassment subtype selection"""
+        if selection not in self.HARASSMENT_SUBTYPES:
+            return ["Please enter a number between 1 and 3 to select a harassment subtype."]
+        
+        self.selected_subtype = self.HARASSMENT_SUBTYPES[selection]
+        
+        reply = (f"You selected {self.selected_subtype}.\n\n"
+                "Do you want to block this user? Please respond with 'yes' or 'no'.")
+        
+        self.state = State.AWAITING_BLOCK_DECISION
+        return [reply]
     
     async def _handle_violence_subtype(self, selection):
         """Handle violence subtype selection"""
@@ -282,7 +293,12 @@ class Report:
             return ["Please enter a number between 1 and 3 to select a violence subtype."]
         
         self.selected_subtype = self.VIOLENCE_SUBTYPES[selection]
-        return await self._complete_simple_report()
+        
+        reply = (f"You selected {self.selected_subtype}.\n\n"
+                "Do you want to block this user? Please respond with 'yes' or 'no'.")
+        
+        self.state = State.AWAITING_BLOCK_DECISION
+        return [reply]
     
     async def _handle_deceptive_subtype(self, selection):
         """Handle deceptive content subtype selection"""
@@ -290,29 +306,15 @@ class Report:
             return ["Please enter a number between 1 and 3 to select a deceptive content subtype."]
         
         self.selected_subtype = self.DECEPTIVE_SUBTYPES[selection]
-        return await self._complete_simple_report()
-    
-    async def _handle_bullying_subtype(self, selection):
-        """Handle bullying subtype selection"""
-        if selection not in self.BULLYING_SUBTYPES:
-            return ["Please enter a number between 1 and 3 to select a bullying and unwanted contact subtype."]
         
-        self.selected_subtype = self.BULLYING_SUBTYPES[selection]
+        reply = (f"You selected {self.selected_subtype}.\n\n"
+                "Do you want to block this user? Please respond with 'yes' or 'no'.")
         
-        # Special flow for coercion involving intimate content
-        if selection == "1":
-            reply = ("You selected Coersion involving intimate content. We will be reporting this as "
-                    "Coersion involving intimate content.\n\n"
-                    "We need to ask you a few more questions to help us understand the situation.\n\n"
-                    "Are you under 18 years old? Please respond with 'yes' or 'no'.\n")
-            
-            self.state = State.CONTINUING_BULLYING_AND_UNWANTED_FLOW
-            return [reply]
-        else:
-            return await self._complete_simple_report()
+        self.state = State.AWAITING_BLOCK_DECISION
+        return [reply]
     
     async def _handle_bullying_flow(self, message):
-        """Handle the extended bullying flow for intimate content coercion"""
+        """Handle the flow for sexual coercion/sextortion"""
         response = message.content.lower().strip()
         
         if response not in ["yes", "no"]:
@@ -323,8 +325,7 @@ class Report:
         self.additional_details = [age_info]
         
         reply = ("Thank you for this information.\n\n"
-                "Did the abuser threaten to distribute sensitive information on or off of the platform? "
-                "Please respond with 'yes' or 'no'.\n")
+                "Did the user threaten to share sensitive content outside of the platform? Please respond with 'yes' or 'no'.")
         
         self.state = State.AWAITING_THREAT_DETAILS
         return [reply]
@@ -337,9 +338,26 @@ class Report:
             return ["Please respond with 'yes' or 'no'."]
         
         # Record threat information
-        threat_info = ("Abuser threatened to distribute sensitive information" if response == "yes" 
-                      else "Abuser did not threaten to distribute sensitive information")
+        threat_info = ("User threatened to share sensitive content" if response == "yes" 
+                    else "User did not threaten to share sensitive content")
         self.additional_details.append(threat_info)
+        
+        reply = ("Thank you for this information.\n\n"
+                "Do you want to block this user? Please respond with 'yes' or 'no'.")
+        
+        self.state = State.AWAITING_BLOCK_DECISION
+        return [reply]
+        
+    async def _handle_block_decision(self, message):
+        """Handle the user's decision to block or not"""
+        response = message.content.lower().strip()
+        
+        if response not in ["yes", "no"]:
+            return ["Please respond with 'yes' or 'no'."]
+        
+        # Record block decision
+        block_info = "User wants to block sender" if response == "yes" else "User does not want to block sender"
+        self.additional_details.append(block_info)
         
         return await self._complete_detailed_report()
     
@@ -347,19 +365,6 @@ class Report:
         """Handle additional details for 'Other' reports"""
         self.additional_details.append(message.content)
         return await self._complete_detailed_report()
-    
-    async def _complete_simple_report(self):
-        """Complete a simple report without additional questions"""
-        reply = (f"You selected {self.selected_subtype or self.selected_type}. "
-                f"We will be reporting this as {self.selected_subtype or self.selected_type}. "
-                "Thank you for your report.\n\n"
-                "If you would like to report something else, please say `report`.\n\n"
-                "To block this user, please go to their profile and click `Block User`.\n\n"
-                "To access the community standards, please say `community standards`.\n")
-        
-        self.state = State.REPORT_COMPLETE
-        await self._send_to_mod_channel()
-        return [reply]
     
     async def _complete_detailed_report(self):
         """Complete a detailed report with additional information"""

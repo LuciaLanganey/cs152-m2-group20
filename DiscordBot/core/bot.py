@@ -97,6 +97,11 @@ class ModBot(discord.Client):
 
         # Check if this message was sent in a server ("guild") or if it's a DM
         if message.guild:
+            # Check if this is a response to a written report request
+            if await self._check_written_report_response(message):
+                await self._handle_written_report(message)
+                return
+                
             await self.handle_channel_message(message)
         else:
             await self.handle_dm(message)
@@ -127,7 +132,15 @@ class ModBot(discord.Client):
         # Initial violation assessment
         if emoji == "🟢":
             await channel.send(f"Moderator {mod_name} has confirmed this is a violation.")
-            await self._add_escalation_reactions(reaction.message)
+            
+            # Written report
+            report_msg = await channel.send("Please write a report explaining how the content violates the platform's community standards.")
+            
+            # Store the message ID
+            if message_id in self.pending_decisions:
+                self.pending_decisions[message_id]['awaiting_written_report'] = str(report_msg.id)
+            
+            # Update database with confirmation
             await self._handle_violation_confirmation(message_id, mod_name)
 
         elif emoji == "🔴":
@@ -137,10 +150,26 @@ class ModBot(discord.Client):
 
         elif emoji == "🟡":
             await channel.send(
-                f"Moderator {mod_name} is not sure if this report is a violation. Requesting second review.\n"
+                f"Moderator {mod_name} is not sure if this report is a violation. Given the high level of concern, the content will be escalated for a second-level review.\n"
                 "Does this content violate the Community Standards on 'Coercion involving intimate content'?\n"
                 "React 🟢 (Yes) or 🔴 (No)."
             )
+
+        # Written report handling
+        elif message_id in self.pending_decisions and self.pending_decisions[message_id].get('awaiting_written_report') == message_id:
+            # Store the written report
+            written_report = reaction.message.content
+            self.pending_decisions[message_id]['written_report'] = written_report
+            
+            # Move to escalation question
+            await self._add_escalation_reactions(reaction.message)
+            
+            # Update database with the written report if available
+            if self.database and 'flagged_msg_id' in self.pending_decisions[message_id]:
+                await self.database.update_flagged_message_notes(
+                    self.pending_decisions[message_id]['flagged_msg_id'],
+                    written_report
+                )
 
         # Escalation decisions
         elif emoji == "✅":
@@ -167,7 +196,7 @@ class ModBot(discord.Client):
                 await self.database.log_moderation_action(action_data)
             except Exception as e:
                 print(f"Error logging moderation action: {e}")
-
+                
     async def _handle_violation_confirmation(self, mod_message_id, mod_name):
         """Handle when moderator confirms a violation"""
         if mod_message_id in self.pending_decisions:
@@ -349,6 +378,37 @@ class ModBot(discord.Client):
                     'message_content': message.content,
                     'flagged_msg_id': flagged_msg_id
                 }
+
+    async def _check_written_report_response(self, message):
+        """Check if this message is a written report response"""
+        if message.channel.id not in [c.id for c in self.mod_channels.values()]:
+            return False
+            
+        # Look for any pending decision awaiting a written report
+        for decision_id, decision_data in self.pending_decisions.items():
+            if decision_data.get('awaiting_written_report'):
+                return True
+        return False
+    
+    async def _handle_written_report(self, message):
+        """Process the written report from a moderator"""
+        for decision_id, decision_data in self.pending_decisions.items():
+            if decision_data.get('awaiting_written_report'):
+                # Store the written report
+                written_report = message.content
+                self.pending_decisions[decision_id]['written_report'] = written_report
+                self.pending_decisions[decision_id].pop('awaiting_written_report')
+                
+                # Update database with written report
+                if self.database and 'flagged_msg_id' in decision_data:
+                    await self.database.update_flagged_message_notes(
+                        decision_data['flagged_msg_id'],
+                        written_report
+                    )
+                
+                # Ask about escalation
+                await self._add_escalation_reactions(message)
+                return
 
     async def eval_text(self, message_content, message_obj=None):
         ''''

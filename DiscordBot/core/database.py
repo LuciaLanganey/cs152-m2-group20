@@ -50,6 +50,19 @@ class DatabaseManager:
         except Exception as e:
             print(f"Error updating flagged message status: {e}")
     
+    async def update_flagged_message_notes(self, doc_id: str, notes: str):
+        """Update the notes/written report for a flagged message"""
+        try:
+            doc_ref = self.db.collection('flagged_messages').document(doc_id)
+            doc_ref.update({
+                'moderator_notes': notes,
+                'notes_updated_at': datetime.now()
+            })
+            print(f"Updated notes for flagged message {doc_id}")
+            
+        except Exception as e:
+            print(f"Error updating flagged message notes: {e}")
+    
     async def update_user_stats(self, user_id: str, guild_id: str, username: str = "",
                                flagged: bool = False, violation: bool = False, false_positive: bool = False):
         try:
